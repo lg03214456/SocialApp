@@ -1,0 +1,18 @@
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+
+# Dotnet
+backend/bin/
+backend/obj/
+*.user
+*.suo
+
+# Env
+**/.env
+**/.env.*.local
+
+# VSCode
+.vscode/
