@@ -1,6 +1,14 @@
+using Microsoft.EntityFrameworkCore;
+using SocialApp.Data;
+using SocialApp.Models;
 var builder = WebApplication.CreateBuilder(args);
 
-// Swagger（Swashbuckle）
+// EF Core 註冊（讀 DefaultConnection）
+builder.Services.AddDbContext<AppDbContext>(opt =>
+    opt.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+
+// Swagger 方便測試
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -9,7 +17,7 @@ const string CorsPolicy = "_cors";
 builder.Services.AddCors(o =>
 {
     o.AddPolicy(CorsPolicy, p => p
-        .WithOrigins("http://localhost:5173")
+        .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
         .AllowAnyHeader()
         .AllowAnyMethod()
         .AllowCredentials());
@@ -30,6 +38,15 @@ app.UseCors(CorsPolicy);
 // --- 範例 API ---
 var summaries = new[] { "Freezing","Bracing","Chilly","Cool","Mild","Warm","Balmy","Hot","Sweltering","Scorching" };
 
+
+// DB 連線測試
+app.MapGet("/db-ping", async (AppDbContext db) =>
+{
+    var ok = await db.Database.CanConnectAsync();
+    return Results.Ok(new { ok });
+});
+
+
 app.MapGet("/weatherforecast", () =>
 {
     var forecast = Enumerable.Range(1, 5).Select(i =>
@@ -41,6 +58,16 @@ app.MapGet("/weatherforecast", () =>
     return forecast;
 })
 .WithName("GetWeatherForecast"); // ← 這裡不再呼叫 .WithOpenApi()
+
+// Friends CRUD（最小）
+app.MapGet("/friends", async (AppDbContext db) => await db.Friends.ToListAsync());
+app.MapPost("/friends", async (AppDbContext db, Friend f) =>
+{
+    db.Friends.Add(f);
+    await db.SaveChangesAsync();
+    return Results.Created($"/friends/{f.Id}", f);
+});
+
 
 app.Run();
 

@@ -23,7 +23,7 @@ export default [
 
   // 針對 .vue：用 vue-eslint-parser，並把 <script lang="ts"> 交給 TS parser
   {
-    files: ['**/*.vue'],
+    files: ['**/*.vue','**/*.d.ts'],
     languageOptions: {
       parser: vueParser,
       parserOptions: {
@@ -35,7 +35,8 @@ export default [
     },
     rules: {
       'vue/multi-word-component-names': 'off',
-      '@typescript-eslint/no-explicit-any': 'off'
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-empty-object-type': 'off',
     }
   },
 

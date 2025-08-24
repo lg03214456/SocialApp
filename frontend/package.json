@@ -12,16 +12,25 @@
     "format": "prettier --write \"src/**/*.{ts,vue,css,scss,md}\""
   },
   "dependencies": {
-    "vue": "^3.5.18"
+    "@primevue/themes": "^4.3.7",
+    "axios": "^1.11.0",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.3.7",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
+    "@tailwindcss/postcss": "^4.1.12",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vue/tsconfig": "^0.7.0",
+    "autoprefixer": "^10.4.21",
     "eslint": "^9.33.0",
     "eslint-config-prettier": "^9.1.2",
     "eslint-plugin-vue": "^9.33.0",
+    "postcss": "^8.5.6",
     "prettier": "^3.6.2",
+    "tailwindcss": "^4.1.12",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.39.1",
     "vite": "^7.1.2",
