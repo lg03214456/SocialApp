@@ -1,43 +1,18 @@
-// // src/services/http.ts
-// // 可改成你的 .NET 8 API 位址；或用 Vite 環境變數切環境
-// export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5000'
-
-
-
-// export async function getForecast() {
-//   const res = await fetch(`${API_BASE}/weatherforecast`)
-//   if (!res.ok) throw new Error(`API ${res.status}`)
-//   return res.json()
-// }
-
-// export async function getFriends() {
-//   const res = await fetch(`${API_BASE}/friends`);
-//   if (!res.ok) throw new Error(`API ${res.status}`);
-//   return res.json();
-// }
-
-// export async function addFriend(name: string) {
-//   const res = await fetch(`${API_BASE}/friends`, {
-//     method: 'POST',
-//     headers: { 'Content-Type': 'application/json' },
-//     body: JSON.stringify({ name })
-//   });
-//   if (!res.ok) throw new Error(`API ${res.status}`);
-//   return res.json();
-// }
-
+// export default api
 // src/services/http.ts
 import axios from 'axios'
 import { useAuth } from '../stores/auth'
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5000'
 
-const api = axios.create({
-  baseURL: API_BASE,
-  withCredentials: true, // 夾帶 HttpOnly Cookie (refresh)
-})
+const api = axios.create({ baseURL: API_BASE, withCredentials: true })
 
-// ── Request：自動加 Authorization
+let refreshing = false
+let queue: Array<() => void> = []
+const queueRequest = <T,>(fn: () => Promise<T>) =>
+  new Promise<T>((resolve, reject) => { queue.push(async () => { try { resolve(await fn()) } catch (e) { reject(e) } }) })
+const flushQueue = () => { queue.forEach(fn => fn()); queue = [] }
+
 api.interceptors.request.use((config) => {
   const { state } = useAuth()
   if (state.accessToken) {
@@ -47,39 +22,74 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// ── Response：401 → refresh → 重送一次
-let refreshing = false
-let queue: Array<() => void> = []
-const queueRequest = <T,>(fn: () => Promise<T>) =>
-  new Promise<T>((resolve, reject) => {
-    queue.push(async () => { try { resolve(await fn()) } catch (e) { reject(e) } })
-  })
-const flushQueue = () => { queue.forEach(fn => fn()); queue = [] }
-
+// api.interceptors.response.use(
+//   (res) => res,
+//   async (error) => {
+//     const original = error.config
+//     const { setAuth, clearAuth } = useAuth()
+    
+//     if (error?.response?.status === 401 && !original._retry) {
+//       if (refreshing) return queueRequest(() => api(original))
+//       original._retry = true
+//       refreshing = true
+//       try {
+//         const { data } = await api.post('/auth/r+efresh', null) // refresh 在 Cookie
+//         setAuth(data.accessToken, data.user ?? null)
+//         refreshing = false; flushQueue()
+//         return api(original)
+//       } catch (e) {
+//         refreshing = false; clearAuth(); flushQueue()
+//         return Promise.reject(e)
+//       }
+//     }
+//     return Promise.reject(error)
+//   }
+// )
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config
     const { setAuth, clearAuth } = useAuth()
-    if (error?.response?.status === 401 && !original._retry) {
+
+    const status = error?.response?.status
+    const url = (original?.url || '').toString()
+
+    // ✅ 關鍵 1：/auth/refresh 自己 401 時，直接清狀態＋導去登入（不要再打 refresh 造成死循環）
+    if (status === 401 && url.endsWith('/auth/refresh')) {
+      clearAuth()
+      try {
+        const { default: router } = await import('../router')
+        router.push({ path: '/login', query: { redirect: window.location.pathname + window.location.search } })
+      } finally {
+        // 若你有 queue 機制，務必清掉
+        refreshing = false
+        flushQueue()
+      }
+      return Promise.reject(error)
+    }
+
+    // ✅ 關鍵 2：一般 401（非 /auth/refresh）才嘗試刷新
+    if (status === 401 && !original._retry) {
       if (refreshing) return queueRequest(() => api(original))
       original._retry = true
       refreshing = true
       try {
-        const { data } = await api.post('/auth/refresh', null) // 用 Cookie 換新 access
+        const { data } = await api.post('/auth/refresh', null) // 這裡會觸發上面的判斷
         setAuth(data.accessToken, data.user ?? null)
-        refreshing = false
-        flushQueue()
         return api(original)
       } catch (e) {
-        refreshing = false
         clearAuth()
-        flushQueue()
+        const { default: router } = await import('../router')
+        router.push({ path: '/login', query: { redirect: window.location.pathname + window.location.search } })
         return Promise.reject(e)
+      } finally {
+        // ✅ 關鍵 3：無論成功/失敗都要把佇列清掉，避免整個 app 卡住 = 白畫面
+        refreshing = false
+        flushQueue()
       }
     }
+
     return Promise.reject(error)
   }
 )
-
 export default api

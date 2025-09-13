@@ -92,8 +92,8 @@ async function handleLogin() {
 
 <template>
   <div class="min-h-screen grid place-items-center p-4 bg-gray-50">
-    <form @submit.prevent="handleLogin" class="w-full max-w-sm border rounded-2xl p-6 shadow-sm bg-white space-y-4">
-      <h1 class="text-xl font-semibold text-center">Sign In</h1>
+    <form class="w-full max-w-sm border rounded-2xl p-6 shadow-sm bg-white space-y-4" @submit.prevent="handleLogin">
+      <h1 class="text-xl font-semibold text-center">Social Hi</h1>
       <p v-if="err" class="text-red-600 text-sm">{{ err }}</p>
 
       <label class="block">
