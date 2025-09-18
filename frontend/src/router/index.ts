@@ -26,6 +26,16 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'add-friend',
+        components: { default: () => import('../views/AddFriendPage.vue'), 
+        header: AppHeader }, // ★ 新增
+      },
+      {
+        path: 'friend-List',
+        components: { default: () => import('../views/FriendList.vue'), 
+        header: AppHeader }, // ★ 新增
+      },
+      {
         path: 'chat',
         components: {
           default: () => import('../views/ChatPage.vue'),

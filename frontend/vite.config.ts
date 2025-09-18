@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     host: '127.0.0.1',   // ✅ 強制用 127.0.0.1
+    // host: '26.165.84.169', 
     port: 5173,          // 看你原本用哪個 port
     proxy: {
       

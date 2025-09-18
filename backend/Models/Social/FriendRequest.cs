@@ -8,7 +8,7 @@ public class FriendRequest
     public long FromUserId { get; set; }
     public long ToUserId { get; set; }
     public string? Message { get; set; }
-    public string Status { get; set; } = "Pending"; // Pending/Accepted/Rejected/Expired
+    public string Status { get; set; } = "pending"; // Pending/Accepted/Rejected/Expired
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }   // 非 nullable（DB 有 DEFAULT + SaveChanges 會自動寫）
 

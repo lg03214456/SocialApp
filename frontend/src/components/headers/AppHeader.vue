@@ -4,34 +4,7 @@ import { useAuth } from '../../stores/auth'
 const auth = useAuth()
 </script>
 
-<!-- AppHeader.vue -->
-<!-- <template>
-  <header class="border-b p-4 flex items-center justify-between">
-    <nav class="flex gap-3">
-      <RouterLink to="/" class="hover:underline">Home</RouterLink>
-      <RouterLink to="/users" class="hover:underline">Users</RouterLink>
-    </nav>
 
-    <button
-      v-if="auth.state.user"
-      type="button"
-      class="group inline-flex items-center gap-2 rounded-full px-2.5 py-1.5 text-sm text-gray-700
-             hover:bg-gray-100 active:bg-gray-200 transition
-             focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50"
-    >
-      <span
-        class="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-br from-blue-100 to-blue-200
-               text-blue-700 text-xs font-bold uppercase shadow-sm"
-        aria-hidden="true"
-      >
-        {{ (auth.state.user.userId ?? '').slice(0, 1) }}
-      </span>
-      <span class="hidden sm:block max-w-[10rem] truncate font-medium">
-        {{ auth.state.user.userId }}
-      </span>
-    </button>
-  </header>
-</template> -->
 <template>
   <!-- 外層滿版：背景 + 底線 -->
   <header class="w-full border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
@@ -48,10 +21,17 @@ const auth = useAuth()
       <div class="flex items-center gap-2">
 
         <!-- 個人主頁 -->
-        <RouterLink
+        <!-- <RouterLink
           to="/profile"
           class="h-9 w-9 rounded-full grid place-items-center hover:bg-gray-100"
           aria-label="個人主頁"
+        >
+          <i class="pi pi-user text-base"></i>
+        </RouterLink> -->
+        <RouterLink
+          to="/friend-List"
+          class="h-9 w-9 rounded-full grid place-items-center hover:bg-gray-100"
+          aria-label="好友列表"
         >
           <i class="pi pi-user text-base"></i>
         </RouterLink>
@@ -85,7 +65,7 @@ const auth = useAuth()
             {{ (auth.state.user.userId ?? '').slice(0, 1) }}
           </span>
           <span class="hidden sm:block max-w-[10rem] truncate font-medium">
-            {{ auth.state.user.userId }}
+            {{  }}
           </span>
         </button>
       </div>
