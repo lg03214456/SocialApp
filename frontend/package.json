@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:staging": "vite --mode staging",
+    "dev:prod": "vite --mode production",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint \"src/**/*.{ts,vue}\"",
@@ -22,6 +24,7 @@
   "devDependencies": {
     "@eslint/js": "^9.33.0",
     "@tailwindcss/postcss": "^4.1.12",
+    "@types/node": "^24.6.2",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vue/tsconfig": "^0.7.0",
     "autoprefixer": "^10.4.21",

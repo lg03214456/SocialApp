@@ -26,6 +26,9 @@ const searching = ref(false)
 const results = ref<UserLite[]>([])
 const hasSearched = ref(false) // 👈 是否已經觸發過搜尋
 
+// 新增一個提示用字串（你也可以用 toast）
+const notice = ref<string | null>(null)
+
 const sending = ref<string | null>(null) // 目前送出的 userId（用於按鈕 loading）
 
 // ✅ 待處理清單 + 載入中狀態
@@ -71,10 +74,11 @@ const incoming = computed(() => pending.value.filter((p) => p.toUserId === selfI
 async function onSearch() {
   const keyword = q.value.trim()
 
+  // 清空：回到初始提示、不打 API
   if (!keyword) {
-    // 清空時不要顯示「查無」，回到初始提示
     results.value = []
     hasSearched.value = false
+    notice.value = null
     return
   }
 
@@ -85,9 +89,11 @@ async function onSearch() {
   }
 
   searching.value = true
+  notice.value = null
 
   try {
     results.value = await searchUsers(keyword) // ← 呼叫 services/friends.ts
+ 
   } catch (e) {
     console.error('search failed', e)
     results.value = [] // 失敗時清空或保留舊結果自行決定
@@ -103,8 +109,8 @@ async function sendInvite(u: UserLite) {
   if (sending.value) return
   sending.value = u.userId
   try {
-    await sendFriendInvite(u.userId)                  // 1) 送出 API（按鈕右側會轉圈）
-    await loadPending()                               // 2) 重抓清單（列表區塊會顯示「載入中…」）
+    await sendFriendInvite(u.userId) // 1) 送出 API（按鈕右側會轉圈）
+    await loadPending() // 2) 重抓清單（列表區塊會顯示「載入中…」）
     //alert(`已送出好友邀請給 @${u.userId}`)
   } catch (e: any) {
     alert(e?.response?.data?.message ?? '送出邀請失敗')
@@ -133,7 +139,7 @@ async function acceptInvite(r: PendingReq) {
     // ✅ 取消成功後重整列表（或直接從陣列移除）
     pending.value = pending.value.filter((x) => x.requestId !== r.requestId)
   } catch (e: any) {
-    alert(e?.response?.data?.message ?? '取消失敗')
+    alert(e?.response?.data?.message ?? '接受失敗')
   }
 }
 
@@ -145,11 +151,9 @@ async function rejectInvite(r: PendingReq) {
     // ✅ 取消成功後重整列表（或直接從陣列移除）
     pending.value = pending.value.filter((x) => x.requestId !== r.requestId)
   } catch (e: any) {
-    alert(e?.response?.data?.message ?? '取消失敗')
+    alert(e?.response?.data?.message ?? '拒絕失敗')
   }
 }
-
-
 </script>
 
 <template>
@@ -167,82 +171,83 @@ async function rejectInvite(r: PendingReq) {
 
     <!-- 搜尋卡片 -->
     <section
-      class="rounded-2xl border bg-white p-4 shadow-sm"
-      :aria-busy="searching ? 'true' : 'false'"
-      aria-live="polite"
+  class="rounded-2xl border bg-white p-4 shadow-sm"
+  :aria-busy="searching ? 'true' : 'false'"
+  aria-live="polite"
+>
+  <label class="block text-sm text-gray-600 mb-2">以 UserID / 使用者名稱 / Email 搜尋</label>
+
+  <div class="flex gap-2">
+    <input
+      v-model.trim="q"
+      type="text"
+      placeholder="例如：alice 或 alice@example.com"
+      class="flex-1 rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+      @keydown.enter.prevent="onSearch"  
+    />
+    <button
+      class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50"
+      :disabled="searching || !q"        
+      @click="onSearch"
     >
-      <label class="block text-sm text-gray-600 mb-2">以 UserID / 使用者名稱 / Email 搜尋</label>
+      <i class="pi pi-search text-sm"></i>
+      <span>搜尋</span>
+    </button>
+  </div>
 
-      <div class="flex gap-2">
-        <input
-          v-model.trim="q"
-          type="text"
-          placeholder="例如：alice 或 alice@example.com"
-          class="flex-1 rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-          @keydown.enter="onSearch"
-        />
-        <button
-          class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50"
-          :disabled="searching"
-          @click="onSearch"
-        >
-          <i class="pi pi-search text-sm"></i>
-          <span>搜尋</span>
-        </button>
-      </div>
-
-      <!-- 結果 / 狀態 -->
-      <div class="mt-4">
-        <!-- 有結果 -->
-        <div v-if="results.length" class="divide-y">
-          <div v-for="u in results" :key="u.id" class="flex items-center justify-between py-3">
-            <div class="flex items-center gap-3">
-              <div
-                class="h-9 w-9 grid place-items-center rounded-full bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 text-xs font-bold uppercase"
-              >
-                {{ ((u.userId || u.username) ?? '').slice(0, 1).toUpperCase() }}
-              </div>
-              <div>
-                <div class="font-medium">{{ u.username }}</div>
-                <div class="text-xs text-gray-500">@{{ u.userId }}</div>
-              </div>
-            </div>
-
-            <!-- <button
-              class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50"
-              :disabled="searching"
-              @click="sendInvite(u)"
-            >
-              <i class="pi pi-user-plus text-sm"></i>
-              邀請
-            </button> -->
-            <button
-              class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50"
-              :disabled="sending === u.userId"
-              @click="sendInvite(u)"
-            >
-              <i class="pi pi-user-plus text-sm" :class="{ 'pi-spin': sending === u.userId }"></i>
-              邀請
-            </button>
+  <!-- 結果 / 狀態 -->
+  <div class="mt-4">
+    <!-- 有結果 -->
+    <div v-if="results.length" class="divide-y">
+      <div v-for="u in results" :key="u.id" class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-3">
+          <div
+            class="h-9 w-9 grid place-items-center rounded-full bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 text-xs font-bold uppercase"
+          >
+            {{ ((u.userId || u.username) ?? '').slice(0, 1).toUpperCase() }}
+          </div>
+          <div>
+            <div class="font-medium">{{ u.username }}</div>
+            <div class="text-xs text-gray-500">@{{ u.userId }}</div>
           </div>
         </div>
 
-        <!-- 搜尋中 -->
-        <p
-          v-else-if="searching"
-          role="status"
-          class="text-sm text-gray-500 flex items-center gap-2"
-        >
-          <i class="pi pi-spinner pi-spin"></i> 搜尋中…
-        </p>
+        <!-- 右側動作區：已是好友顯示徽章，否則顯示邀請按鈕 -->
+        <div class="flex items-center gap-2">
+          <span
+            v-if="u.alreadyFriend"
+            class="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-xs font-medium text-green-700"
+          >
+            <i class="pi pi-check-circle text-xs"></i> 已是好友
+          </span>
 
-        <!-- 搜尋過但沒有結果 -->
-        <p v-else-if="hasSearched" class="text-sm text-gray-500">查無符合的使用者</p>
-
-        <!-- 尚未搜尋 -->
-        <p v-else class="text-sm text-gray-500">輸入關鍵字後按 Enter 或點搜尋。</p>
+          <button
+            v-else
+            class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50"
+            :disabled="sending === u.userId"
+            @click="sendInvite(u)"
+          >
+            <i class="pi pi-user-plus text-sm" :class="{ 'pi-spin': sending === u.userId }"></i>
+            邀請
+          </button>
+        </div>
       </div>
-    </section>
+    </div>
+
+    <!-- 搜尋中 -->
+    <p v-else-if="searching" role="status" class="text-sm text-gray-500 flex items-center gap-2">
+      <i class="pi pi-spinner pi-spin"></i> 搜尋中…
+    </p>
+
+    <!-- 搜尋過但沒有結果 -->
+    <p v-else-if="hasSearched" class="text-sm text-gray-500">查無符合的使用者</p>
+
+    <!-- 尚未搜尋 -->
+    <p v-else class="text-sm text-gray-500">輸入關鍵字後按 Enter 或點搜尋。</p>
+
+  </div>
+</section>
+
 
     <!-- 待處理邀請 -->
     <!-- 待處理邀請：我送出的 -->
@@ -273,9 +278,7 @@ async function rejectInvite(r: PendingReq) {
               <div class="text-sm">
                 傳送給 <span class="font-medium">@{{ r.toUserId }}</span>
               </div>
-              <div class="text-xs text-gray-500">
-                狀態：Pending
-              </div>
+              <div class="text-xs text-gray-500">狀態：Pending</div>
               <div class="text-xs text-gray-400">
                 {{ new Date(r.createdAt).toLocaleString() }}
               </div>

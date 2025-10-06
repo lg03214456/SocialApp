@@ -1,21 +1,22 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// https://vite.dev/config/
-export default defineConfig({
-  plugins: [vue()],
-  server: {
-    host: '127.0.0.1',   // ✅ 強制用 127.0.0.1
-    // host: '26.165.84.169', 
-    port: 5173,          // 看你原本用哪個 port
-    proxy: {
-      
-      // 讓前端以 /api 開頭打，實際代理到後端 http://localhost:5000
-      '/api': {
-        target: 'http://localhost:5000',
-        changeOrigin: true,
-        rewrite: p => p.replace(/^\/api/, '')
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd())
+  const target = env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:5000'
+
+  return {
+    plugins: [vue()],
+    server: {
+      host: env.VITE_DEV_HOST || true,
+      port: Number(env.VITE_DEV_PORT || 5173),
+      proxy: {
+        '/api': {
+          target,
+          changeOrigin: true,
+          rewrite: p => p.replace(/^\/api/, '')
+        }
       }
     }
-    }
+  }
 })

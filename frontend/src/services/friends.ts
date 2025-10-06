@@ -1,7 +1,7 @@
 // src/services/friends.ts
 import api from './http'
 
-export type UserLite = { id: number; userId: string; username: string; avatar?: string }
+export type UserLite = { id: number; userId: string; username: string; avatar?: string ;alreadyFriend: boolean}
 
 // 既有搜尋
 export async function searchUsers(q: string): Promise<UserLite[]> {
@@ -15,6 +15,7 @@ export type FriendRequestDto = {
   toUserId: string
   status: 'Pending'
   createdAt: string
+  alreadyFriend: boolean
 }
 
 export async function sendFriendInvite(

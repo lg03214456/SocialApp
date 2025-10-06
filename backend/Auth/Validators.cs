@@ -1,5 +1,5 @@
 using FluentValidation;
-
+using SocialApp.Api.Models.Auth.Dtos;
 namespace SocialApp.Api.Auth;
 
 public class RegisterValidator : AbstractValidator<RegisterRequest>

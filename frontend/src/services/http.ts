@@ -3,7 +3,9 @@
 import axios from 'axios'
 import { useAuth } from '../stores/auth'
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5000'
+// export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:5000'
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+
 
 const api = axios.create({ baseURL: API_BASE, withCredentials: true })
 

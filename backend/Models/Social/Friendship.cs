@@ -2,7 +2,6 @@
 using SocialApp.Api.Models.Core;  // 引入 User 類別所在 namespace
 using System.ComponentModel.DataAnnotations; // 為了 [Timestamp]
 namespace SocialApp.Api.Models.Social;
-
 public class Friendship
 {
     public long Id { get; set; }

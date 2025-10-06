@@ -65,7 +65,7 @@ const auth = useAuth()
             {{ (auth.state.user.userId ?? '').slice(0, 1) }}
           </span>
           <span class="hidden sm:block max-w-[10rem] truncate font-medium">
-            {{  }}
+            {{auth.state.user.userId }}
           </span>
         </button>
       </div>
