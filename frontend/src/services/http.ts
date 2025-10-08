@@ -24,29 +24,6 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// api.interceptors.response.use(
-//   (res) => res,
-//   async (error) => {
-//     const original = error.config
-//     const { setAuth, clearAuth } = useAuth()
-    
-//     if (error?.response?.status === 401 && !original._retry) {
-//       if (refreshing) return queueRequest(() => api(original))
-//       original._retry = true
-//       refreshing = true
-//       try {
-//         const { data } = await api.post('/auth/r+efresh', null) // refresh 在 Cookie
-//         setAuth(data.accessToken, data.user ?? null)
-//         refreshing = false; flushQueue()
-//         return api(original)
-//       } catch (e) {
-//         refreshing = false; clearAuth(); flushQueue()
-//         return Promise.reject(e)
-//       }
-//     }
-//     return Promise.reject(error)
-//   }
-// )
 api.interceptors.response.use(
   (res) => res,
   async (error) => {

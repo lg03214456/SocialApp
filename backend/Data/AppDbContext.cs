@@ -32,7 +32,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
   public DbSet<MessageAttachment> MessageAttachments => Set<MessageAttachment>();
   public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
   public DbSet<ConversationMembershipEvent> ConversationMembershipEvents => Set<ConversationMembershipEvent>();
-
+  public DbSet<UserBookmark> UserBookmarks => Set<UserBookmark>();
 
   protected override void OnModelCreating(ModelBuilder b)
   {
@@ -436,6 +436,60 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
       e.Property<byte[]>("RowVer").IsRowVersion().IsConcurrencyToken();
     });
 
+    // === UserBookmarks（chat）===
+    b.Entity<UserBookmark>(e =>
+    {
+      e.ToTable("ConversationBookmarks", "chat");   // 表名可依你偏好調整
+
+      e.HasKey(x => x.Id);
+
+      e.Property(x => x.Title).HasMaxLength(100);
+      e.Property(x => x.Note).HasMaxLength(500);
+
+      e.Property(x => x.SortOrder).HasColumnType("decimal(18,4)");
+
+      e.Property(x => x.PinnedAt)
+        .HasColumnType("datetimeoffset(7)")
+        .HasDefaultValueSql("SYSDATETIMEOFFSET()");
+
+      e.Property(x => x.UpdatedAt)
+        .HasColumnType("datetimeoffset(7)")
+        .HasDefaultValueSql("SYSDATETIMEOFFSET()");
+
+      // 常用查詢索引
+      e.HasIndex(x => x.UserId);
+      e.HasIndex(x => new { x.UserId, x.ConversationId });
+      e.HasIndex(x => new { x.UserId, x.SortOrder });
+      e.HasIndex(x => new { x.UserId, x.PinnedAt });
+
+      // 去重：同一使用者 + 同一聊天室 + 同一訊息 的書籤不可重覆
+      // （允許同一聊天室多個「未指定 MessageId」的書籤）
+      e.HasIndex(x => new { x.UserId, x.ConversationId, x.MessageId })
+        .IsUnique()
+        .HasFilter("[MessageId] IS NOT NULL"); // 若非 SQL Server，移除此行或改用對應語法
+
+      // Shadow rowversion（與你其他表一致）
+      e.Property<byte[]>("RowVer").IsRowVersion().IsConcurrencyToken();
+      
+      // （可選）FK，依你的實體型別名稱決定是否加上
+      // 刪聊天室 → 連動刪書籤
+      e.HasOne<Conversation>()
+        .WithMany()
+        .HasForeignKey(x => x.ConversationId)
+        .OnDelete(DeleteBehavior.Cascade);
+
+      e.HasOne<Message>()
+        .WithMany()
+        .HasForeignKey(x => x.MessageId)
+        .OnDelete(DeleteBehavior.SetNull);
+
+      e.HasOne<User>()
+        .WithMany()
+        .HasForeignKey(x => x.UserId)
+        .OnDelete(DeleteBehavior.Restrict);
+
+    });
+
 
   }
 
@@ -489,6 +543,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     foreach (var e in ChangeTracker.Entries<ConversationParticipant>()
          .Where(x => x.State is EntityState.Added or EntityState.Modified))
       e.Entity.JoinedAt = e.Entity.JoinedAt == default ? now : e.Entity.JoinedAt;
+
+    foreach (var e in ChangeTracker.Entries<UserBookmark>()
+             .Where(x => x.State == EntityState.Added || x.State == EntityState.Modified))
+    {
+      // 建立時若 PinnedAt 還是 default，就補現在
+      if (e.State == EntityState.Added && e.Entity.PinnedAt == default)
+        e.Entity.PinnedAt = now;
+
+      e.Entity.UpdatedAt = now;
+    }
 
   }
 }

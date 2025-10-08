@@ -13,7 +13,7 @@ export type FriendInboxRow = {
   friendId: number
   friendUid: string
   friendName: string
-  conversationId?: number | null
+  conversationId: number 
   lastMessage?: LastMessage | null
   readUpToMessageId?: number | null
   unreadCount: number
