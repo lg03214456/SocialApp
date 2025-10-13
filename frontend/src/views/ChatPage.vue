@@ -12,9 +12,17 @@ import {
   setReadUpTo,
   sendTextMessage,
   getDmPeerRead, // 取得對方已讀游標
+  listFavorites,
+  addFavorite,
+  removeFavoriteById,
   type FriendInboxRow,
   type MessageItem,
+  type FavoriteDTO,
 } from '../services/chats'
+import '../styles/chat-bubbles.css'
+
+import { useToast } from '../stores/toast'
+const { showSuccess, showError, showInfo, showWarn } = useToast()
 
 /* ============================================================
  * Types
@@ -28,14 +36,28 @@ type Msg = {
   time: string // UI 顯示時間
   date: string // UI 日期標籤
   mine: boolean
+  edited?: boolean // ✅ 新增
 }
 
 /** 最愛以「訊息」為單位 */
+// type Favorite = {
+//   cid: number // conversationId
+//   mid: number // messageId
+//   preview: string // 當下存的摘要（避免未載入該訊息時沒東西可顯示）
+//   timeIso: string // 該訊息的 ISO 時間（顯示用）
+// }
 type Favorite = {
-  cid: number // conversationId
-  mid: number // messageId
-  preview: string // 當下存的摘要（避免未載入該訊息時沒東西可顯示）
-  timeIso: string // 該訊息的 ISO 時間（顯示用）
+  fid: number // = FavoriteDTO.id
+  cid: number // = conversationId
+  mid: number // = messageId（null 代表整個聊天室）
+  title?: string | null
+  note?: string | null
+  sortOrder?: number | null
+  pinnedAtIso: string // = pinnedAt
+  updatedAtIso: string // = updatedAt
+
+  // 前端自算的顯示用欄位（後端沒有）
+  preview: string
 }
 
 /* ============================================================
@@ -50,6 +72,7 @@ const inbox = ref<FriendInboxRow[]>([])
 const loadingList = ref(false)
 const errorList = ref<string | null>(null)
 
+const hasActive = computed(() => activeId.value !== null)
 const activeRow = ref<FriendInboxRow | null>(null)
 const activeId = ref<number | null>(null)
 const q = ref('')
@@ -129,6 +152,13 @@ const toMsg = (m: MessageItem): Msg => ({
   date: fmtChatDateLabel(m.time),
   mine: m.mine,
 })
+
+// === Edit（本地） ===
+const editOpen = ref(false)
+const editSaving = ref(false) // 先保留，未來接 API 會用到
+const editMsgId = ref<number | null>(null)
+const editDraft = ref('')
+const editTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
 /** [CHANGED] 嘗試捲到指定訊息 id；支援置中（center） */
 function scrollToMsg(
@@ -303,6 +333,38 @@ async function openFromRow(row: FriendInboxRow, opts?: { skipScroll?: boolean })
   }
 }
 
+async function loadFavorites() {
+  try {
+    const rows = await listFavorites()
+    favorites.value = rows.map(
+      (r: FavoriteDTO): Favorite => ({
+        fid: r.id,
+        cid: r.conversationId,
+        mid: r.messageId,
+        title: r.title ?? null,
+        note: r.note ?? null,
+        sortOrder: r.sortOrder ?? null,
+        pinnedAtIso: r.pinnedAt,
+        updatedAtIso: r.updatedAt,
+        // 本地 preview：盡力從 messagesMap 拿文案；沒有就用 Title 或預設字
+        preview: r.message
+          ? r.message.kind === 'text'
+            ? r.message.text || '(空白訊息)'
+            : r.message.kind === 'sticker'
+              ? '貼圖'
+              : '檔案'
+          : r.messageId != null
+            ? (messagesMap.value[r.conversationId]?.find((m) => m.id === r.messageId)?.text ??
+              r.title ??
+              '訊息')
+            : (r.title ?? '聊天室書籤'),
+      })
+    )
+  } catch (e) {
+    console.error('loadFavorites failed', e)
+  }
+}
+
 /** 本地加入訊息（送訊息時用） */
 function liftAndPreview(row: FriendInboxRow, msg: Msg) {
   const cid = activeId.value!
@@ -436,66 +498,143 @@ function onMsgContextMenu(m: Msg, e: MouseEvent) {
 }
 
 /** 以目前右鍵選到的訊息，切換加入/移除最愛 */
-function toggleFavoriteFromCtx() {
+// 避免連點造成重複呼叫
+const favBusy = new Set<string>() // key = `${cid}:${mid}`
+
+/** 以目前右鍵選到的訊息，切換加入/移除最愛（前端先動，再打後端） */
+async function toggleFavoriteFromCtx() {
   const cid = activeId.value
   const mid = ctx.value.msgId
   if (!cid || !mid) return
 
-  const exists = favorites.value.findIndex((x) => x.cid === cid && x.mid === mid)
-  if (exists >= 0) {
-    favorites.value.splice(exists, 1)
-    return
+  const key = `${cid}:${mid}`
+  if (favBusy.has(key)) return
+  favBusy.add(key)
+
+  try {
+    const idx = favorites.value.findIndex((x) => x.cid === cid && x.mid === mid)
+
+    // ===== 已存在 → 移除（只用 favoriteId；暫時筆不可刪）=====
+    if (idx >= 0) {
+      const target = favorites.value[idx]
+
+      // 還在建立中的暫時筆（fid ≤ 0）→ 不允許刪除，避免競態
+      if (!target.fid || target.fid <= 0) {
+        console.warn('Bookmark is still being created; cannot remove yet.')
+        return
+      }
+
+      // 樂觀移除
+      favorites.value.splice(idx, 1)
+      try {
+        await removeFavoriteById(target.fid)
+        showSuccess('已移除最愛')
+      } catch (e) {
+        // 失敗回滾
+        favorites.value.splice(idx, 0, target)
+        console.error('removeFavorite failed', e)
+        alert('移除最愛失敗，請稍後再試')
+        showError('移除最愛失敗，請稍後再試')
+      }
+      return
+    }
+
+    // ===== 不存在 → 新增（樂觀 + 覆蓋或回滾）=====
+    // 準備 preview（沿用你原本的邏輯）
+    const list = messagesMap.value[cid] ?? []
+    const msg = list.find((m) => m.id === mid)
+    const preview = msg
+      ? msg.kind === 'text'
+        ? msg.text || '(空白訊息)'
+        : msg.kind === 'sticker'
+          ? '貼圖'
+          : '檔案'
+      : '訊息'
+
+    const nowIso = new Date().toISOString()
+    const temp = {
+      fid: -Date.now(), // 暫時 id（負數避免與真實 id 衝突）
+      cid,
+      mid,
+      title: null as string | null,
+      note: null as string | null,
+      sortOrder: null as number | null,
+      pinnedAtIso: nowIso,
+      updatedAtIso: nowIso,
+      preview,
+    }
+    favorites.value.unshift(temp)
+    const optimisticIndex = 0
+
+    try {
+      const saved: FavoriteDTO = await addFavorite({
+        conversationId: cid,
+        messageId: mid,
+        // 需要就順帶送 title / note / sortOrder
+      })
+
+      // 用後端回傳覆蓋暫時筆
+      favorites.value[optimisticIndex] = {
+        fid: saved.id,
+        cid: saved.conversationId,
+        mid: saved.messageId,
+        title: saved.title ?? null,
+        note: saved.note ?? null,
+        sortOrder: saved.sortOrder ?? null,
+        pinnedAtIso: saved.pinnedAt,
+        updatedAtIso: saved.updatedAt,
+        preview:
+          saved.messageId != null
+            ? (messagesMap.value[saved.conversationId]?.find((m) => m.id === saved.messageId)
+                ?.text ?? temp.preview)
+            : (saved.title ?? '聊天室書籤'),
+      }
+      showSuccess('已加入最愛')
+    } catch (e) {
+      // 失敗回滾
+      favorites.value.splice(optimisticIndex, 1)
+      console.error('addFavorite failed', e)
+      alert('加入最愛失敗，請稍後再試')
+      showError('加入最愛失敗，請稍後再試')
+    }
+  } finally {
+    favBusy.delete(key)
   }
-
-  // 準備 preview（優先用當前 messagesMap 找到的那則）
-  const list = messagesMap.value[cid] ?? []
-  const msg = list.find((m) => m.id === mid)
-  const preview = msg
-    ? msg.kind === 'text'
-      ? msg.text || '(空白訊息)'
-      : msg.kind === 'sticker'
-        ? '貼圖'
-        : '檔案'
-    : '訊息'
-  const timeIso = msg ? new Date().toISOString() : new Date().toISOString()
-
-  favorites.value.unshift({ cid, mid, preview, timeIso })
 }
 
-/** [CHANGED] 點擊最愛 → 先切到 all、載入、置中並高亮，不覆蓋定位 */
+/** 點擊最愛 → 切到 all、載入、雙向補齊到該訊息、置中並高亮（mid 一定存在） */
 async function openFavorite(f: Favorite) {
   suppressAutoScroll.value = true
+  try {
+    // 1) 先切到「全部」確保聊天 DOM 掛載
+    if (tab.value !== 'all') {
+      tab.value = 'all'
+      await nextTick()
+    }
 
-  // [ADDED] 先切到「全部」確保聊天 DOM 掛載
-  if (tab.value !== 'all') {
-    tab.value = 'all'
+    // 2) 找到該會話，開啟但先不要自動捲動
+    const row = inbox.value.find((r) => r.conversationId === f.cid)
+    if (!row) return
+    await openFromRow(row, { skipScroll: true })
     await nextTick()
-  }
 
-  const row = inbox.value.find((r) => r.conversationId === f.cid)
-  if (!row) {
-    // [FIX] 早退前恢復旗標
+    // 3) 防呆：mid 必須是有限數字
+    if (!Number.isFinite(f.mid)) return
+
+    // 4) 先就地嘗試置中；若不在當前範圍，雙向載到包含為止
+    let ok = scrollToMsg(f.mid, { center: true })
+    if (!ok) {
+      ok = await ensureMessageLoaded(f.cid, f.mid)
+      await nextTick()
+      ok = scrollToMsg(f.mid, { center: true })
+    }
+
+    // 5) 成功就高亮
+    if (ok) centerAndHighlight(f.mid)
+  } finally {
+    // 6) 總是恢復自動捲動
     suppressAutoScroll.value = false
-    return
   }
-
-  await openFromRow(row, { skipScroll: true }) // [ADDED] 避免 openFromRow 自動捲動干擾
-  await nextTick()
-
-  // 先嘗試現有範圍中置中定位
-  let ok = scrollToMsg(f.mid, { center: true })
-  if (!ok) {
-    // 雙向載到包含為止
-    ok = await ensureMessageLoaded(f.cid, f.mid)
-    await nextTick()
-    scrollToMsg(f.mid, { center: true })
-  }
-
-  // 高亮提示
-  centerAndHighlight(f.mid)
-
-  await nextTick()
-  suppressAutoScroll.value = false
 }
 
 function onMenu(action: string) {
@@ -504,20 +643,170 @@ function onMenu(action: string) {
     case 'reply':
       /* TODO */ break
     case 'copy':
-      /* TODO */ break
+      /* TODO */
+      void copyFromCtx()
+      break
     case 'forward':
       /* TODO */ break
     case 'favorite':
       toggleFavoriteFromCtx()
       break
     case 'edit':
-      /* TODO */ break
+      void openEditFromCtx()
+      /* TODO */
+      break
     case 'delete':
       /* TODO */ break
-    case 'report':
-      /* TODO */ break
-    case 'block':
-      /* TODO */ break
+    // case 'report':
+    //   /* TODO */ break
+    // case 'block':
+    //   /* TODO */ break
+  }
+}
+
+/* ===== Message actions：集中放功能函式 ===== */
+
+/** 依右鍵選取的訊息複製文字 */
+async function copyFromCtx(): Promise<void> {
+  const cid = activeId.value
+  const mid = ctx.value.msgId
+  if (!cid || !mid) {
+    showWarn('尚未選取訊息')
+    return
+  }
+
+  // 1) 先在已載入的訊息裡找
+  let msg = (messagesMap.value[cid] ?? []).find((m) => m.id === mid)
+
+  // 2) 找不到就雙向補載到包含該訊息
+  if (!msg) {
+    const ok = await ensureMessageLoaded(cid, mid)
+    if (ok) msg = (messagesMap.value[cid] ?? []).find((m) => m.id === mid)
+  }
+
+  // 3) 還是找不到
+  if (!msg) {
+    showError('找不到這則訊息，可能已被刪除或尚未載入')
+    return
+  }
+
+  // 4) 只支援文字
+  if (msg.kind !== 'text') {
+    showWarn('這不是文字訊息，無法複製')
+    return
+  }
+  const text = (msg.text ?? '').trim()
+  if (!text) {
+    showInfo('這則訊息是空白')
+    return
+  }
+
+  // 5) 寫入剪貼簿（Clipboard API，失敗則 fallback）
+  try {
+    await navigator.clipboard.writeText(text)
+    showSuccess('已複製到剪貼簿')
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      showSuccess('已複製到剪貼簿')
+    } catch (e) {
+      console.error('clipboard failed', e)
+      showError('複製失敗，請手動選取')
+    }
+  }
+}
+
+/** 右鍵點到自己的文字訊息才允許編輯 */
+async function openEditFromCtx() {
+  const cid = activeId.value
+  const mid = ctx.value.msgId
+  if (!cid || !mid) return
+
+  // 先從已載入列表找；沒有就用 ensureMessageLoaded 幫你補到畫面裡
+  let msg = (messagesMap.value[cid] ?? []).find((m) => m.id === mid)
+  if (!msg) {
+    const ok = await ensureMessageLoaded(cid, mid)
+    if (ok) msg = (messagesMap.value[cid] ?? []).find((m) => m.id === mid)
+  }
+  if (!msg) return showWarn('找不到這則訊息')
+  if (!msg.mine) return showWarn('只能編輯自己發送的訊息')
+  if (msg.kind !== 'text') return showWarn('目前僅支援編輯文字訊息')
+
+  editMsgId.value = mid
+  editDraft.value = msg.text ?? ''
+  editOpen.value = true
+  await nextTick()
+  editTextareaRef.value?.focus()
+}
+
+/** 只在本地把訊息文字改掉（不打 API） */
+function applyLocalEdit(cid: number, mid: number, newText: string): boolean {
+  const list = messagesMap.value[cid] ?? []
+  const i = list.findIndex((m) => m.id === mid)
+  if (i < 0) return false
+
+  const prev = list[i]
+  list[i] = { ...prev, text: newText, edited: true }
+
+  // 若左側清單這筆就是最後一則，也一起更新
+  const row = inbox.value.find((r) => r.conversationId === cid)
+  if (row?.lastMessage?.id === mid) {
+    row.lastMessage = { ...row.lastMessage, text: newText }
+  }
+  return true
+}
+
+/** 儲存（本地版） */
+async function saveEdit() {
+  const cid = activeId.value
+  const mid = editMsgId.value
+  if (!cid || !mid) return
+
+  const newText = editDraft.value.trim()
+  if (!newText) return showWarn('訊息不可為空白')
+
+  const ok = applyLocalEdit(cid, mid, newText)
+  if (!ok) return showError('找不到這則訊息')
+
+  showSuccess('已更新訊息（本地）')
+  closeEdit()
+
+  // --- 未來接 API 只要把這段打開並覆蓋本地即可 ---
+  // editSaving.value = true
+  // try {
+  //   const saved = await updateMessageText(cid, mid, newText)
+  //   // 依 saved 覆蓋 messagesMap / inbox.lastMessage
+  //   toast.success?.('已更新訊息')
+  //   closeEdit()
+  // } catch (e) {
+  //   toast.error?.('更新失敗，請稍後再試')
+  // } finally {
+  //   editSaving.value = false
+  // }
+}
+
+function closeEdit() {
+  editOpen.value = false
+  editMsgId.value = null
+  editDraft.value = ''
+}
+
+/** Modal 內的鍵盤操作：Esc 取消、Ctrl/Cmd+Enter 儲存 */
+function onEditKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    if (!editSaving.value) closeEdit()
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'enter') {
+    e.preventDefault()
+    if (!editSaving.value) void saveEdit()
   }
 }
 
@@ -536,22 +825,23 @@ function showDateHintOnce(s: string) {
 function handleScrollDateHint() {
   const el = scroller.value
   if (!el) return
-  const bottom = el.scrollTop + el.clientHeight
+  const elRect = el.getBoundingClientRect()
+  const bottom = elRect.bottom
   const rows = Array.from(el.querySelectorAll<HTMLDivElement>('.msg-row'))
   let picked: HTMLDivElement | null = null
   for (const r of rows) {
-    const top = r.offsetTop
-    if (top <= bottom) picked = r
+    const rr = r.getBoundingClientRect()
+    if (rr.top <= bottom) picked = r
     else break
   }
   if (picked) showDateHintOnce(picked.dataset.date || '')
 }
-
 /* ============================================================
  * Lifecycle & Watchers
  * ============================================================ */
 onMounted(async () => {
   await loadInbox()
+  await loadFavorites()
   window.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Escape') closeCtxMenu()
   })
@@ -570,6 +860,47 @@ watch(activeMsgs, async () => {
 watch(tab, (t) => {
   if (t === 'bookmarks') closeCtxMenu()
 })
+
+/* ===== Avatar helpers（用 m.mine 區分） ===== */
+
+// 先準備「自己」的頭像資料（之後要接後端就改這裡）
+// - 若你已能從後端拿到自己的 uid / avatarUrl，就把 selfUid/selfAvatarUrl 設上去
+const selfUid = ref<string>('我') // TODO: 之後改成後端回傳的我的 uid
+const selfAvatarUrl = ref<string | null>(null) // TODO: 之後改成後端回傳的我的 avatarUrl
+
+// 對方（目前會話對象）的 uid / avatarUrl
+// - avatarUrl 之後可在 openFromRow 時順便撈對方個人檔案塞進來
+const peerAvatarUrl = ref<string | null>(null) // TODO: 之後接到對方的頭像 URL 時設值
+
+function avatarUrl(m: Msg): string | null {
+  // 我自己的訊息 → 顯示自己的頭像
+  if (m.mine) return selfAvatarUrl.value
+  // 對方的訊息 → 顯示目前 activeRow 的頭像
+  return peerAvatarUrl.value
+}
+
+function avatarLetter(m: Msg): string {
+  // 我自己的訊息 → 用自己的 uid 第一個字母（拿不到就顯示「我」）
+  if (m.mine) return (selfUid.value || '我').slice(0, 1).toUpperCase()
+  // 對方的訊息 → 用對方 uid 第一個字母（拿不到顯示 '?'）
+  const uid = activeRow.value?.friendUid || '?'
+  return uid.slice(0, 1).toUpperCase()
+}
+
+watch(
+  () => scroller.value,
+  (el, oldEl) => {
+    if (oldEl) {
+      oldEl.removeEventListener('scroll', handleScrollDateHint as any)
+      oldEl.removeEventListener('scroll', closeCtxMenu as any)
+    }
+    if (el) {
+      el.addEventListener('scroll', handleScrollDateHint, { passive: true })
+      el.addEventListener('scroll', closeCtxMenu, { passive: true })
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
@@ -618,14 +949,14 @@ watch(tab, (t) => {
           >
             <div class="h-11 w-11 rounded-full bg-[#e8d8c7] grid place-items-center shrink-0">
               <span class="text-sm text-[#5c4033] font-semibold">
-                {{ (row.friendName || row.friendUid).slice(0, 1).toUpperCase() }}
+                {{ row.friendUid.slice(0, 1).toUpperCase() }}
               </span>
             </div>
 
             <div class="min-w-0 flex-1">
               <div class="flex items-center justify-between gap-2">
                 <div class="truncate font-medium">
-                  {{ row.friendName || row.friendUid }}
+                  {{ row.friendUid }}
                   <span class="text-xs text-[#8b6f61]">@{{ row.friendUid }}</span>
                 </div>
                 <div class="text-[11px] text-[#8b6f61] shrink-0">
@@ -666,219 +997,266 @@ watch(tab, (t) => {
         class="relative flex min-h-0 flex-col rounded-xl border border-[#e0d6c8] bg-[#faf6f2]"
         :class="{ 'hidden md:flex': activeId === null }"
       >
-        <!-- 日期提示 -->
-        <div
-          v-if="visibleDateHint"
-          class="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 bg-[#5c4033]/80 text-white text-xs px-3 py-1 rounded-full shadow transition-opacity"
-        >
-          {{ visibleDateHint }}
-        </div>
-
-        <!-- Header -->
-        <div class="shrink-0 p-3 border-b border-[#e0d6c8] flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <button
-              class="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#e0d6c8] hover:bg-[#f0e5da]"
-              title="返回清單"
-              @click="activeId = null"
-            >
-              <i class="pi pi-arrow-left text-[#5c4033]"></i>
-            </button>
-            <div class="h-9 w-9 rounded-full bg-[#e8d8c7] grid place-items-center">
-              <span class="text-xs text-[#5c4033] font-semibold">
-                {{
-                  (activeRow?.friendName || activeRow?.friendUid || '?').slice(0, 1).toUpperCase()
-                }}
-              </span>
-            </div>
-            <div>
-              <div class="font-semibold leading-tight">
-                {{ activeRow?.friendName || activeRow?.friendUid || '選擇一個會話' }}
-                <span v-if="activeRow" class="ml-1 text-xs text-[#8b6f61]"
-                  >@{{ activeRow.friendUid }}</span
-                >
-              </div>
-              <div class="text-[11px] text-[#8b6f61]">已連線</div>
-            </div>
+        <!-- A) 尚未選擇任何會話：只顯示空狀態 -->
+        <template v-if="!hasActive">
+          <div class="shrink-0 p-3 border-b border-[#e0d6c8]">
+            <div class="text-sm text-[#8b6f61]">選擇一個會話</div>
           </div>
-
-          <div class="flex items-center gap-2">
-            <!-- 頁籤：全部 / 最愛 -->
-            <div
-              class="hidden md:flex items-center rounded-full border border-[#e0d6c8] overflow-hidden"
-            >
-              <button
-                class="px-3 py-1 text-xs"
-                :class="tab === 'all' ? 'bg-[#f0e5da] text-[#5c4033]' : 'text-[#8b6f61]'"
-                title="顯示全部對話"
-                @click="tab = 'all'"
-              >
-                全部
-              </button>
-              <button
-                class="px-3 py-1 text-xs"
-                :class="tab === 'bookmarks' ? 'bg-[#f0e5da] text-[#5c4033]' : 'text-[#8b6f61]'"
-                title="只看最愛"
-                @click="tab = 'bookmarks'"
-              >
-                最愛
-              </button>
-            </div>
-
-            <!-- 更多（之後要加 header 選單也可以放這裡） -->
-            <button
-              class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#e0d6c8] hover:bg-[#f0e5da]"
-              title="更多"
-            >
-              <i class="pi pi-ellipsis-v text-[#5c4033]"></i>
-            </button>
-          </div>
-        </div>
-
-        <!-- A) 全部：聊天室 -->
-        <div
-          v-if="tab === 'all'"
-          ref="scroller"
-          class="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-3 bg-[rgba(247,243,239,0.6)]"
-        >
-          <div
-            v-if="!activeMsgs.length"
-            class="h-full grid place-items-center text-sm text-[#8b6f61]"
-          >
+          <div class="flex-1 grid place-items-center text-sm text-[#8b6f61]">
             選擇左側一個對話開始聊天
           </div>
+        </template>
 
-          <template v-else>
-            <template v-for="m in activeMsgs" :key="m.id">
-              <!-- 未讀分隔線 -->
-              <div
-                v-if="currentUnreadFirstId && m.id === currentUnreadFirstId"
-                id="unread-sep"
-                class="w-full my-2"
+        <!-- B) 已選擇會話：顯示 Header + Tabs + 內容 -->
+        <template v-else>
+          <!-- 日期提示 -->
+          <div
+            v-if="visibleDateHint"
+            class="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 bg-[#5c4033]/80 text-white text-xs px-3 py-1 rounded-full shadow transition-opacity"
+          >
+            {{ visibleDateHint }}
+          </div>
+
+          <!-- Header -->
+          <div class="shrink-0 p-3 border-b border-[#e0d6c8] flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <button
+                class="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#e0d6c8] hover:bg-[#f0e5da]"
+                title="返回清單"
+                @click="activeId = null"
               >
-                <div class="flex items-center gap-2 text-[11px] text-[#8b6f61]">
-                  <div class="flex-1 border-t border-[#e0d6c8]"></div>
-                  <span class="px-2">未讀訊息</span>
-                  <div class="flex-1 border-t border-[#e0d6c8]"></div>
+                <i class="pi pi-arrow-left text-[#5c4033]"></i>
+              </button>
+              <div class="h-9 w-9 rounded-full bg-[#e8d8c7] grid place-items-center">
+                <span class="text-xs text-[#5c4033] font-semibold">
+                  {{ (activeRow?.friendUid || '?').slice(0, 1).toUpperCase() }}
+                </span>
+              </div>
+              <div>
+                <div class="font-semibold leading-tight">
+                  {{ activeRow?.friendUid || '選擇一個會話' }}
+                  <span v-if="activeRow" class="ml-1 text-xs text-[#8b6f61]"
+                    >@{{ activeRow.friendUid }}</span
+                  >
                 </div>
+                <div class="text-[11px] text-[#8b6f61]">已連線</div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <!-- 頁籤：全部 / 最愛 -->
+              <div
+                class="hidden md:flex items-center rounded-full border border-[#e0d6c8] overflow-hidden"
+              >
+                <button
+                  class="px-3 py-1 text-xs"
+                  :class="tab === 'all' ? 'bg-[#f0e5da] text-[#5c4033]' : 'text-[#8b6f61]'"
+                  title="顯示全部對話"
+                  @click="tab = 'all'"
+                >
+                  全部
+                </button>
+                <button
+                  class="px-3 py-1 text-xs"
+                  :class="tab === 'bookmarks' ? 'bg-[#f0e5da] text-[#5c4033]' : 'text-[#8b6f61]'"
+                  title="只看最愛"
+                  @click="tab = 'bookmarks'"
+                >
+                  最愛
+                </button>
               </div>
 
-              <!-- 訊息 row（加上 id 供捲動定位） -->
-              <div
-                :id="`msg-${m.id}`"
-                :data-date="m.date"
-                class="flex msg-row"
-                :class="m.mine ? 'justify-end' : 'justify-start'"
-                @contextmenu="onMsgContextMenu(m, $event)"
+              <!-- 更多 -->
+              <button
+                class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#e0d6c8] hover:bg-[#f0e5da]"
+                title="更多"
               >
+                <i class="pi pi-ellipsis-v text-[#5c4033]"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- A) 全部：聊天室 -->
+          <div
+            v-if="tab === 'all'"
+            ref="scroller"
+            class="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-3 bg-[rgba(247,243,239,0.6)]"
+          >
+            <div
+              v-if="!activeMsgs.length"
+              class="h-full grid place-items-center text-sm text-[#8b6f61]"
+            >
+              尚無訊息。
+            </div>
+
+            <template v-else>
+              <template v-for="m in activeMsgs" :key="m.id">
+                <!-- 未讀分隔線 -->
                 <div
-                  class="max-w-[80%] flex items-end gap-2"
-                  :class="m.mine ? 'flex-row-reverse' : ''"
+                  v-if="currentUnreadFirstId && m.id === currentUnreadFirstId"
+                  id="unread-sep"
+                  class="w-full my-2"
                 >
-                  <div>
-                    <!-- [CHANGED] 高亮：當 highlightMid 命中時加上 ring -->
-                    <div
-                      v-if="m.kind === 'text'"
-                      class="rounded-2xl px-3 py-2 text-sm"
-                      :class="[
-                        m.mine
-                          ? 'bg-[#b7791f] text-white rounded-br-md'
-                          : 'bg-white border border-[#e0d6c8] text-[#5c4033] rounded-bl-md',
-                        highlightMid === m.id
-                          ? 'ring-2 ring-[#d4a373] ring-offset-2 ring-offset-[rgba(247,243,239,0.6)] animate-pulse'
-                          : '',
-                      ]"
-                    >
-                      {{ m.text }}
+                  <div class="flex items-center gap-2 text-[11px] text-[#8b6f61]">
+                    <div class="flex-1 border-t border-[#e0d6c8]"></div>
+                    <span class="px-2">未讀訊息</span>
+                    <div class="flex-1 border-t border-[#e0d6c8]"></div>
+                  </div>
+                </div>
+
+                <!-- 訊息 row -->
+                <div
+                  :id="`msg-${m.id}`"
+                  :data-date="m.date"
+                  class="flex msg-row"
+                  :class="m.mine ? 'justify-end' : 'justify-start'"
+                  @contextmenu="onMsgContextMenu(m, $event)"
+                >
+                  <div
+                    class="max-w-[80%] flex items-end gap-2"
+                    :class="m.mine ? 'justify-end' : ''"
+                  >
+                    <!-- 對方才顯示頭像 -->
+                    <div v-if="!m.mine" class="shrink-0">
+                      <div
+                        v-if="avatarUrl(m)"
+                        class="h-8 w-8 rounded-full overflow-hidden border border-[#e0d6c8] bg-[#e8d8c7]"
+                      >
+                        <img :src="avatarUrl(m)!" alt="avatar" class="h-full w-full object-cover" />
+                      </div>
+                      <div v-else class="h-8 w-8 rounded-full bg-[#e8d8c7] grid place-items-center">
+                        <span class="text-[11px] text-[#5c4033] font-semibold">{{
+                          avatarLetter(m)
+                        }}</span>
+                      </div>
                     </div>
-                    <div
-                      v-else
-                      class="rounded-2xl p-2"
-                      :class="[
-                        m.mine
-                          ? 'bg-[#f3e6d9] border border-[#e8d8c7] rounded-br-md'
-                          : 'bg-white border border-[#e0d6c8] rounded-bl-md',
-                        highlightMid === m.id ? 'ring-2 ring-[#d4a373]' : '',
-                      ]"
-                    >
-                      <div class="text-5xl leading-none text-center select-none" aria-label="貼圖">
-                        {{ STICKER_EMOJI }}
+
+                    <!-- 氣泡 + 時間（用 row-reverse 讓自己的時間在左邊、對方在右邊） -->
+                    <div class="flex items-end gap-2" :class="m.mine ? 'flex-row-reverse' : ''">
+                      <!-- 氣泡 -->
+                      <div
+                        v-if="m.kind === 'text'"
+                        class="bubble rounded-2xl px-3 py-2 text-sm relative"
+                        :class="[
+                          m.mine
+                            ? 'bubble-right bg-[#b7791f] text-white rounded-br-md'
+                            : 'bubble-left bg-white border border-[#e0d6c8] text-[#5c4033] rounded-bl-md',
+                          highlightMid === m.id
+                            ? 'ring-2 ring-[#d4a373] ring-offset-2 ring-offset-[rgba(247,243,239,0.6)] animate-pulse'
+                            : '',
+                        ]"
+                      >
+                        {{ m.text }}
+                      </div>
+                      <div
+                        v-else
+                        class="bubble rounded-2xl p-2 relative"
+                        :class="[
+                          m.mine
+                            ? 'bubble-right bg-[#f3e6d9] border border-[#e8d8c7] rounded-br-md'
+                            : 'bubble-left bg-white border border-[#e0d6c8] rounded-bl-md',
+                          highlightMid === m.id ? 'ring-2 ring-[#d4a373]' : '',
+                        ]"
+                      >
+                        <div
+                          class="text-5xl leading-none text-center select-none"
+                          aria-label="貼圖"
+                        >
+                          {{ STICKER_EMOJI }}
+                        </div>
+                      </div>
+
+                      <!-- 時間 / 已讀（自己的在左邊、對方在右邊） -->
+                      <div
+                        class="text-[11px] text-[#5c4033] whitespace-nowrap shrink-0 leading-snug"
+                      >
+                        <template v-if="m.mine">
+                          <div class="text-[#8b6f61]">
+                            {{ isReadByPeer(m.id) ? '已讀' : '已送出' }}
+                          </div>
+                          <div>
+                            {{ m.time }}
+                            <span v-if="m.edited" class="ml-1 rounded-full border border-[#e0d6c8] px-1 py-[1px] text-[10px] align-middle"> · 已編輯</span>
+                          </div>
+                        </template>
+
+                        <template v-else>
+                          <div>
+                            {{ m.time }}
+                            <span v-if="m.edited" class="ml-1 rounded-full border border-[#e0d6c8] px-1 py-[1px] text-[10px] align-middle"> · 已編輯</span>
+                          </div>
+                        </template>
                       </div>
                     </div>
                   </div>
+                </div>
+              </template>
+            </template>
+          </div>
 
-                  <div class="text-[11px] text-[#5c4033] whitespace-nowrap shrink-0">
-                    {{ m.time }}
-                    <span v-if="m.mine"> · {{ isReadByPeer(m.id) ? '已讀' : '已送出' }}</span>
+          <!-- B) 最愛 -->
+          <div
+            v-else
+            class="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-2 bg-[rgba(247,243,239,0.6)]"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs text-[#8b6f61]">我的最愛（{{ favoriteView.length }}）</div>
+              <button
+                class="px-2 py-1 text-xs rounded-full border border-[#e0d6c8] text-[#5c4033] hover:bg-[#f0e5da]"
+                title="回到聊天"
+                @click="tab = 'all'"
+              >
+                回到聊天
+              </button>
+            </div>
+
+            <div
+              v-if="!favoriteView.length"
+              class="h-full grid place-items-center text-sm text-[#8b6f61]"
+            >
+              尚未加入最愛。對訊息按右鍵 → 「加入最愛」即可加入。
+            </div>
+
+            <button
+              v-for="item in favoriteView"
+              :key="`fav-${item.f.cid}-${item.f.mid}`"
+              class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#f0e5da] text-left border border-transparent"
+              @click="openFavorite(item.f)"
+            >
+              <div class="h-10 w-10 rounded-full bg-[#e8d8c7] grid place-items-center shrink-0">
+                <span class="text-xs text-[#5c4033] font-semibold">
+                  {{ item.row.friendUid.slice(0, 1).toUpperCase() }}
+                </span>
+              </div>
+
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="truncate font-medium">
+                    {{ item.row.friendName || item.row.friendUid }}
+                    <span class="text-xs text-[#8b6f61]">@{{ item.row.friendUid }}</span>
+                  </div>
+                  <div class="text-[11px] text-[#8b6f61] shrink-0">
+                    {{ fmtChatTimeZh12(item.f.pinnedAtIso) }}
                   </div>
                 </div>
+                <div class="truncate text-xs text-[#8b6f61]">
+                  {{ item.f.preview }}
+                </div>
               </div>
-            </template>
-          </template>
-        </div>
 
-        <!-- B) 最愛 -->
-        <div
-          v-else
-          class="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-2 bg-[rgba(247,243,239,0.6)]"
-        >
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-xs text-[#8b6f61]">我的最愛（{{ favoriteView.length }}）</div>
-            <button
-              class="px-2 py-1 text-xs rounded-full border border-[#e0d6c8] text-[#5c4033] hover:bg-[#f0e5da]"
-              @click="tab = 'all'"
-              title="回到聊天"
-            >
-              回到聊天
+              <i class="pi pi-star-fill text-[#b7791f] text-xs ml-1" title="已加入最愛"></i>
+
+              <span
+                v-if="item.row.unreadCount"
+                class="ml-1 h-5 min-w-5 px-1.5 grid place-items-center rounded-full bg-[#b7791f] text-white text-[10px]"
+              >
+                {{ item.row.unreadCount }}
+              </span>
             </button>
           </div>
+        </template>
 
-          <div
-            v-if="!favoriteView.length"
-            class="h-full grid place-items-center text-sm text-[#8b6f61]"
-          >
-            尚未加入最愛。對訊息按右鍵 → 「加入最愛」即可加入。
-          </div>
-
-          <button
-            v-for="item in favoriteView"
-            :key="`fav-${item.f.cid}-${item.f.mid}`"
-            class="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#f0e5da] text-left border border-transparent"
-            @click="openFavorite(item.f)"
-          >
-            <div class="h-10 w-10 rounded-full bg-[#e8d8c7] grid place-items-center shrink-0">
-              <span class="text-xs text-[#5c4033] font-semibold">
-                {{ (item.row.friendName || item.row.friendUid).slice(0, 1).toUpperCase() }}
-              </span>
-            </div>
-
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center justify-between gap-2">
-                <div class="truncate font-medium">
-                  {{ item.row.friendName || item.row.friendUid }}
-                  <span class="text-xs text-[#8b6f61]">@{{ item.row.friendUid }}</span>
-                </div>
-                <div class="text-[11px] text-[#8b6f61] shrink-0">
-                  {{ fmtChatTimeZh12(item.f.timeIso) }}
-                </div>
-              </div>
-              <div class="truncate text-xs text-[#8b6f61]">
-                {{ item.f.preview }}
-              </div>
-            </div>
-
-            <i class="pi pi-star-fill text-[#b7791f] text-xs ml-1" title="已加入最愛"></i>
-
-            <span
-              v-if="item.row.unreadCount"
-              class="ml-1 h-5 min-w-5 px-1.5 grid place-items-center rounded-full bg-[#b7791f] text-white text-[10px]"
-            >
-              {{ item.row.unreadCount }}
-            </span>
-          </button>
-        </div>
-
-        <!-- 右鍵選單 -->
+        <!-- 右鍵選單：放在分支外，favoriteMenuText 正常可用 -->
         <div v-if="ctx.show" data-ctx-menu class="fixed inset-0 z-[60]">
           <div class="absolute inset-0" @click="closeCtxMenu"></div>
           <div
@@ -897,7 +1275,7 @@ watch(tab, (t) => {
               </li>
               <li>
                 <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
+                  class="menu-item w-full text-left px-3 py-2 hover:bg黑/5"
                   :disabled="ctx.kind !== 'text'"
                   @click="onMenu('copy')"
                 >
@@ -906,7 +1284,7 @@ watch(tab, (t) => {
               </li>
               <li>
                 <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
+                  class="menu-item w-full text-left px-3 py-2 hover:bg黑/5"
                   @click="onMenu('forward')"
                 >
                   ↗ 轉傳…
@@ -914,9 +1292,13 @@ watch(tab, (t) => {
               </li>
               <li>
                 <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
+                  class="menu-item w-full text-left px-3 py-2 hover:bg黑/5"
                   @click="onMenu('favorite')"
                 >
+                  <!-- ★ 最愛 ICON：可依 favoriteMenuText 判斷填滿或空心 -->
+                  <i
+                    :class="['pi', favoriteMenuText === '移除最愛' ? 'pi-star-fill' : 'pi-star']"
+                  ></i>
                   {{ favoriteMenuText }}
                 </button>
               </li>
@@ -924,7 +1306,7 @@ watch(tab, (t) => {
               <li v-if="ctx.mine" class="h-px my-1 mx-2 bg-black/10"></li>
               <li v-if="ctx.mine">
                 <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
+                  class="menu-item w-full text-left px-3 py-2 hover:bg黑/5"
                   @click="onMenu('edit')"
                 >
                   ✏ 編輯訊息
@@ -938,29 +1320,50 @@ watch(tab, (t) => {
                   🗑 刪除訊息…
                 </button>
               </li>
-
-              <li v-if="!ctx.mine" class="h-px my-1 mx-2 bg-black/10"></li>
-              <li v-if="!ctx.mine">
-                <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
-                  @click="onMenu('report')"
-                >
-                  ⚠ 檢舉…
-                </button>
-              </li>
-              <li v-if="!ctx.mine">
-                <button
-                  class="menu-item w-full text-left px-3 py-2 hover:bg-black/5"
-                  @click="onMenu('block')"
-                >
-                  ⛔ 封鎖
-                </button>
-              </li>
             </ul>
           </div>
         </div>
 
-        <!-- Composer -->
+        <!-- 編輯訊息 Modal（本地） -->
+        <div
+          v-if="editOpen"
+          class="fixed inset-0 z-[80] flex items-end md:items-center justify-center bg-black/40"
+          tabindex="-1"
+          @keydown.stop="onEditKeydown"
+        >
+          <div
+            class="w-full md:w-[520px] bg-white rounded-xl shadow-xl border border-[#e0d6c8] p-4 md:p-5"
+          >
+            <div class="text-sm text-[#5c4033] mb-2 font-medium">編輯訊息</div>
+
+            <textarea
+              ref="editTextareaRef"
+              v-model="editDraft"
+              rows="4"
+              class="w-full rounded-lg border border-[#e0d6c8] bg-white px-3 py-2 text-sm text-[#5c4033] focus:ring-2 focus:ring-[#d4a373]/40 outline-none"
+              placeholder="輸入新的內容…"
+            ></textarea>
+
+            <div class="mt-3 flex items-center justify-end gap-2">
+              <button
+                class="px-3 py-1.5 text-sm rounded-full border border-[#e0d6c8] text-[#5c4033] hover:bg-[#f0e5da]"
+                :disabled="editSaving"
+                @click="closeEdit"
+              >
+                取消
+              </button>
+              <button
+                class="px-3 py-1.5 text-sm rounded-full border-[#e0d6c8] text-[#5c4033] hover:bg-[#f0e5da] disabled:opacity-60"
+                :disabled="editSaving || !editDraft.trim()"
+                @click="saveEdit"
+              >
+                {{ editSaving ? '儲存中…' : '確定' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Composer（保持原樣） -->
         <div class="shrink-0 p-3 border-t border-[#e0d6c8]">
           <div class="flex items-center gap-2">
             <input

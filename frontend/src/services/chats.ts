@@ -124,3 +124,78 @@ export async function getDmPeerRead(
   }
 }
 
+/* =========================
+ * Favorites（UserBookmark）
+ * ========================= */
+
+// 對齊後端 Model
+// services/chats.ts
+export type FavoriteDTO = {
+  id: number
+  conversationId: number
+  messageId: number         
+  title?: string | null
+  note?: string | null
+  sortOrder?: number | null
+  pinnedAt: string                 // ISO
+  updatedAt: string                // ISO
+
+  // 後端帶回的訊息摘要（若收藏整個會話，或訊息已刪除，則為 null）
+  message?: {
+    id: number
+    kind: 'text' | 'sticker' | 'file'
+    text?: string | null
+    time: string                   // ISO
+    mine: boolean
+  } | null
+}
+
+// 取清單（可依後端是否分頁調整參數）
+export async function listFavorites(): Promise<FavoriteDTO[]> {
+  const { data } = await api.get('/chat/favorites');
+  return data;
+}
+
+// 新增書籤
+/** 新增最愛（messageId 可為 null → 收藏整個會話） */
+export type AddFavoriteReq = {
+  conversationId: number
+  messageId?: number | null
+  title?: string | null
+  note?: string | null
+  sortOrder?: number | null
+}
+export async function addFavorite(body: AddFavoriteReq): Promise<FavoriteDTO> {
+  const { data } = await api.post('/chat/favorites', body)
+  return data
+}
+
+// 刪除書籤
+export async function removeFavoriteById(favoriteId: number): Promise<void> {
+  await api.delete(`/chat/favorites/${favoriteId}`);
+}
+
+
+/** （可選）更新最愛的標題/備註/排序 */
+export type PatchFavoriteReq = {
+  title?: string | null
+  note?: string | null
+  sortOrder?: number | null
+}
+export async function patchFavorite(
+  favoriteId: number,
+  body: PatchFavoriteReq
+): Promise<FavoriteDTO> {
+  const { data } = await api.patch(`/chat/favorites/${favoriteId}`, body)
+  return data
+}
+// （可選）後端若支援用 cid+mid 刪除
+// export async function removeFavoriteByKey(
+//   conversationId: number,
+//   messageId?: number | null
+// ): Promise<void> {
+//   await api.delete('/chat/favorites', { params: { conversationId, messageId } });
+// }
+
+
+

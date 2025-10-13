@@ -1028,6 +1028,130 @@ app.MapGet("/chat/conversations/{id:long}/dm-peer-read", async (
 
 
 
+
+static FavoriteDto ToDto(UserBookmark b) => new()
+{
+    Id = b.Id,
+    ConversationId = b.ConversationId,
+    MessageId = b.MessageId,
+    Title = b.Title,
+    Note = b.Note,
+    SortOrder = b.SortOrder,
+    PinnedAt = b.PinnedAt,
+    UpdatedAt = b.UpdatedAt,
+    Message = null
+};
+
+app.MapGet("/chat/favorites", async (HttpContext ctx, AppDbContext db) =>
+{
+    var selfId = GetUserId(ctx);
+    if (selfId is null) return Results.Unauthorized();
+    var me = selfId.Value;
+
+    var rows = await (
+        from b in db.UserBookmarks.AsNoTracking()
+        where b.UserId == me
+        join m in db.Messages.AsNoTracking()
+            on b.MessageId equals (long?)m.MessageId into gm
+        from mm in gm.DefaultIfEmpty() // 允許 null（收藏整個會話）
+        orderby b.SortOrder != null descending, b.SortOrder, b.PinnedAt descending
+        select new FavoriteDto {
+            Id = b.Id,
+            ConversationId = b.ConversationId,
+            MessageId = b.MessageId,
+            Title = b.Title,
+            Note = b.Note,
+            SortOrder = b.SortOrder,
+            PinnedAt = b.PinnedAt,
+            UpdatedAt = b.UpdatedAt,
+            Message = (mm == null) ? null : new FavoriteMessageDto {
+                Id   = mm.MessageId,
+                Kind = mm.Kind,
+                Text = mm.Text,
+                Time = mm.CreatedAt,
+                Mine = (mm.SenderId == me)
+            }
+        }
+    ).ToListAsync();
+
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+
+app.MapPost("/chat/favorites", async (HttpContext ctx, AppDbContext db, AddFavoriteReq req) =>
+{
+    var selfId = GetUserId(ctx);
+    if (selfId is null) return Results.Unauthorized();
+    var me = selfId.Value;
+
+    // 基本驗證
+    if (req.ConversationId <= 0)
+        return Results.BadRequest(new { message = "conversationId is required" });
+
+    // 驗證會話包含自己
+    var inConv = await db.ConversationParticipants
+        .AsNoTracking()
+        .AnyAsync(cp => cp.ConversationId == req.ConversationId && cp.UserId == me);
+    if (!inConv) return Results.Forbid();
+
+    // 若帶 messageId，驗證訊息屬於該會話且未刪除
+    if (req.MessageId is long mid)
+    {
+        var okMsg = await db.Messages.AsNoTracking()
+            .AnyAsync(m => m.MessageId == mid &&
+                           m.ConversationId == req.ConversationId &&
+                           m.DeletedAt == null);
+        if (!okMsg)
+            return Results.BadRequest(new { message = "Message not in conversation or deleted" });
+    }
+
+    // 避免重複收藏（建議 DB 也加 UNIQUE: UserId, ConversationId, MessageId）
+    var exists = await db.UserBookmarks.AsNoTracking()
+        .AnyAsync(b => b.UserId == me &&
+                       b.ConversationId == req.ConversationId &&
+                       b.MessageId == req.MessageId);
+    if (exists)
+        return Results.Conflict(new { message = "Already bookmarked" });
+
+    var now = DateTimeOffset.UtcNow;
+    var b = new UserBookmark
+    {
+        UserId = me,
+        ConversationId = req.ConversationId,
+        MessageId = req.MessageId,
+        Title = string.IsNullOrWhiteSpace(req.Title) ? null : req.Title!.Trim(),
+        Note  = string.IsNullOrWhiteSpace(req.Note)  ? null : req.Note!.Trim(),
+        SortOrder = req.SortOrder,
+        PinnedAt = now,
+        UpdatedAt = now
+    };
+
+    db.UserBookmarks.Add(b);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(ToDto(b));
+})
+.RequireAuthorization();
+
+
+
+app.MapDelete("/chat/favorites/{id:long}", async (HttpContext ctx, AppDbContext db, long id) =>
+{
+    var selfId = GetUserId(ctx);
+    if (selfId is null) return Results.Unauthorized();
+    var me = selfId.Value;
+
+    var b = await db.UserBookmarks
+        .FirstOrDefaultAsync(x => x.Id == id && x.UserId == me);
+    if (b is null) return Results.NotFound();
+
+    db.UserBookmarks.Remove(b);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+})
+.RequireAuthorization();
+
 app.Run();
 // === record 型別必須放在最後 ===
 public record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)

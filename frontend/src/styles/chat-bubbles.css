@@ -1,0 +1,30 @@
+/* src/styles/chat-bubbles.css */
+
+/* 左右泡泡尾巴 */
+.bubble-left::after,
+.bubble-right::after {
+  content: "";
+  position: absolute;
+  bottom: 0.5rem;
+  width: 0; height: 0;
+  border: 8px solid transparent;
+}
+
+/* 對方（左邊）尾巴：指向左側 */
+.bubble-left::after {
+  left: -8px;
+  border-right-color: white;
+}
+
+/* 我方（右邊）尾巴：指向右側 */
+.bubble-right::after {
+  right: -8px;
+  border-left-color: #b7791f;
+}
+
+/* 若左邊泡泡有邊框，需要補一層邊框的錯覺（可選） */
+.bubble-left {
+  position: relative;
+  outline: 1px solid #e0d6c8;
+  outline-offset: -1px;
+}
